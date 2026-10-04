@@ -81,7 +81,11 @@
   let storyTransitioning = false;
   let activeOverlay = null;
   let overlayTrigger = null;
+  let overlayTimeline = null;
+  let overlayFocusTimer = null;
+  let overlayClosing = false;
   let lockedScrollY = 0;
+  const warmedImages = new Set();
 
   initHeader();
   initLanguage();
@@ -89,7 +93,8 @@
   initOverlays();
   initContentActions();
   initKeyboard();
-  preloadImages();
+  syncHeroProject(projects[activeProjectIndex], false);
+  scheduleAdjacentPreload();
 
   if (finePointer && !reducedMotion) initCursor();
   if (hasGSAP && !reducedMotion) {
@@ -190,7 +195,7 @@
         });
 
         timeline
-          .to(".project-count, .project-meta-copy, .detail-index", { y: -10, autoAlpha: 0, duration: 0.28, stagger: 0.035, ease: "power2.in" }, 0)
+          .to(".hero-rail-current, .project-meta-copy, .detail-index", { y: -10, autoAlpha: 0, duration: 0.28, stagger: 0.035, ease: "power2.in" }, 0)
           .to(mainActive, { scale: 1.025, xPercent: exitX, duration: 1.05 }, 0)
           .to(mainNext, { clipPath: "inset(0 0% 0 0)", scale: 1, duration: 1.05 }, 0)
           .to(detailActive, { scale: 1.03, duration: 0.82 }, 0.08)
@@ -199,20 +204,24 @@
             activeProjectIndex = nextIndex;
             syncHeroProject(project);
           }, 0.36)
-          .fromTo(".project-count, .project-meta-copy, .detail-index", { y: 11, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.45, stagger: 0.045, ease: "power3.out" }, 0.48);
+          .fromTo(".hero-rail-current, .project-meta-copy, .detail-index", { y: 11, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.45, stagger: 0.045, ease: "power3.out" }, 0.48);
       });
     } finally {
       sliderTransitioning = false;
     }
   }
 
-  function syncHeroProject(project) {
-    document.querySelector(".project-count").textContent = `${pad(activeProjectIndex + 1)} / ${pad(projects.length)}`;
+  function syncHeroProject(project, warmAdjacent = true) {
+    document.querySelector(".hero-rail-current").textContent = pad(activeProjectIndex + 1);
+    document.querySelector(".hero-rail-total").textContent = pad(projects.length);
+    document.querySelector(".hero-rail")?.setAttribute("aria-label", `Project ${activeProjectIndex + 1} of ${projects.length}`);
     document.querySelector(".project-name").textContent = project.title;
+    document.querySelector(".project-type").textContent = project.type;
     document.querySelector(".project-location").textContent = project.location;
     document.querySelector(".detail-index").textContent = `Material detail / ${pad(activeProjectIndex + 1)}`;
     const openButton = document.querySelector("[data-open-project]");
     openButton?.setAttribute("aria-label", `View ${project.title} project`);
+    if (warmAdjacent) preloadAdjacentSlides(activeProjectIndex);
   }
 
   function initOverlays() {
@@ -302,6 +311,7 @@
       await new Promise((resolve) => {
         gsap.timeline({
           defaults: { ease: "power4.inOut" },
+          onInterrupt: resolve,
           onComplete: () => {
             activeImage.src = nextImage.src;
             activeImage.alt = nextImage.alt;
@@ -344,7 +354,10 @@
       return;
     }
 
-    gsap.timeline({ onComplete: () => { storyTransitioning = false; } })
+    gsap.timeline({
+      onComplete: () => { storyTransitioning = false; },
+      onInterrupt: () => { storyTransitioning = false; },
+    })
       .to([image, ".story-index", ".story-copy h2", ".story-text"], { autoAlpha: 0, y: -9, duration: 0.28, stagger: 0.025, ease: "power2.in" })
       .add(() => updateStory(true))
       .fromTo(image, { autoAlpha: 0, scale: 1.035 }, { autoAlpha: 1, scale: 1, duration: 0.85, ease: "power4.out" })
@@ -403,46 +416,84 @@
     if (!overlay || activeOverlay) return;
     activeOverlay = overlay;
     overlayTrigger = trigger || document.activeElement;
+    overlayClosing = false;
     lockScroll();
     overlay.hidden = false;
     overlay.setAttribute("aria-hidden", "false");
 
     const closeButton = overlay.querySelector("[data-close-overlay]");
     if (hasGSAP && !reducedMotion) {
+      overlayTimeline?.kill();
+      gsap.killTweensOf(overlay);
       gsap.set(overlay, { autoAlpha: 1 });
       if (overlay === viewer) {
-        gsap.timeline({ defaults: { ease: "power4.out" } })
+        overlayTimeline = gsap.timeline({
+          defaults: { ease: "power4.out" },
+          onComplete: () => { overlayTimeline = null; },
+        })
           .fromTo(".viewer-media", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 1.05 })
           .fromTo(".viewer-image.is-active", { scale: 1.045 }, { scale: 1, duration: 1.2 }, 0)
           .fromTo(".viewer-info", { x: 40, autoAlpha: 0 }, { x: 0, autoAlpha: 1, duration: 0.72 }, 0.28)
           .fromTo(".viewer-copy > *, .viewer-facts div, .viewer-project-nav", { y: 13, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.52, stagger: 0.045 }, 0.46);
       } else {
         const panel = overlay.querySelector(".content-dialog-panel, .story-visual");
-        gsap.timeline({ defaults: { ease: "power4.out" } })
+        overlayTimeline = gsap.timeline({
+          defaults: { ease: "power4.out" },
+          onComplete: () => { overlayTimeline = null; },
+        })
           .fromTo(overlay, { autoAlpha: 0 }, { autoAlpha: 1, duration: 0.42 })
           .fromTo(panel, { clipPath: "inset(0 0 100% 0)" }, { clipPath: "inset(0 0 0% 0)", duration: 0.85 }, 0.08)
           .fromTo(overlay.querySelectorAll("h2, p, .story-controls, .dialog-email"), { y: 15, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.58, stagger: 0.05 }, 0.32);
       }
     }
 
-    window.setTimeout(() => closeButton?.focus(), reducedMotion ? 0 : 350);
+    window.clearTimeout(overlayFocusTimer);
+    overlayFocusTimer = window.setTimeout(() => {
+      if (activeOverlay === overlay && !overlayClosing) closeButton?.focus();
+    }, reducedMotion ? 0 : 350);
   }
 
   function closeOverlay() {
-    if (!activeOverlay) return;
+    if (!activeOverlay || overlayClosing) return;
     const overlay = activeOverlay;
+    overlayClosing = true;
+    window.clearTimeout(overlayFocusTimer);
+    overlayFocusTimer = null;
+    overlayTimeline?.kill();
+    overlayTimeline = null;
+    if (hasGSAP) {
+      gsap.killTweensOf(overlay);
+      gsap.killTweensOf(overlay.querySelectorAll("*"));
+    }
+
     const finish = () => {
       overlay.hidden = true;
       overlay.setAttribute("aria-hidden", "true");
       activeOverlay = null;
+      overlayClosing = false;
+      galleryTransitioning = false;
+      storyTransitioning = false;
       unlockScroll();
       overlayTrigger?.focus?.();
       overlayTrigger = null;
-      if (hasGSAP) gsap.set(overlay, { clearProps: "opacity,visibility" });
+      if (hasGSAP) {
+        gsap.set(overlay, { clearProps: "opacity,visibility" });
+        gsap.set(overlay.querySelectorAll(".content-dialog-panel, .story-visual, .viewer-media, .viewer-info, h2, p, .story-controls, .dialog-email, .viewer-copy > *, .viewer-facts div, .viewer-project-nav"), {
+          clearProps: "opacity,visibility,transform,clipPath",
+        });
+      }
     };
 
     if (hasGSAP && !reducedMotion) {
-      gsap.to(overlay, { autoAlpha: 0, duration: 0.38, ease: "power2.inOut", onComplete: finish });
+      overlayTimeline = gsap.to(overlay, {
+        autoAlpha: 0,
+        duration: 0.38,
+        ease: "power2.inOut",
+        onComplete: () => {
+          overlayTimeline = null;
+          finish();
+        },
+      });
     } else {
       finish();
     }
@@ -507,7 +558,10 @@
     document.body.style.top = "";
     document.body.style.left = "";
     document.body.style.paddingRight = "";
+    const previousScrollBehavior = document.documentElement.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = "auto";
     window.scrollTo(0, lockedScrollY);
+    document.documentElement.style.scrollBehavior = previousScrollBehavior;
   }
 
   function initMotion() {
@@ -521,20 +575,26 @@
       gsap.set(".hero-eyebrow", { x: -18, autoAlpha: 0 });
       gsap.set(".hero-title .line-inner", { yPercent: 115, rotate: 1 });
       gsap.set(".hero-description, .hero-actions", { y: 18, autoAlpha: 0 });
+      gsap.set(".hero-rail-line", { scaleY: 0 });
+      gsap.set(".hero-rail-count", { y: 10, autoAlpha: 0 });
       gsap.set(".hero-main-reveal", { clipPath: "inset(0 0 100% 0)" });
       gsap.set(".hero-main-image.is-active", { scale: 1.075, yPercent: 2 });
       gsap.set(".hero-detail-reveal", { clipPath: "inset(100% 0 0 0)" });
       gsap.set(".hero-detail-image.is-active", { scale: 1.065 });
+      gsap.set(".hero-detail-wrap", { autoAlpha: 0 });
       gsap.set(".detail-index, .project-meta, .scroll-hint", { y: 12, autoAlpha: 0 });
 
       loadTimeline
         .to(".wordmark-mask > span", { yPercent: 0, duration: 0.66 }, 0.02)
         .to(".primary-nav > *, .header-actions > *", { y: 0, autoAlpha: 1, duration: 0.54, stagger: 0.045 }, 0.14)
         .to(".hero-eyebrow", { x: 0, autoAlpha: 1, duration: 0.62 }, 0.28)
+        .to(".hero-rail-line", { scaleY: 1, duration: 0.88 }, 0.3)
+        .to(".hero-rail-count", { y: 0, autoAlpha: 1, duration: 0.58 }, 0.64)
         .to(".hero-title .line-inner", { yPercent: 0, rotate: 0, duration: 0.9, stagger: 0.075 }, 0.32)
         .to(".hero-main-reveal", { clipPath: "inset(0 0 0% 0)", duration: 1.08 }, 0.48)
         .to(".hero-main-image.is-active", { scale: 1, yPercent: 0, duration: 1.45 }, 0.48)
         .to(".hero-description, .hero-actions", { y: 0, autoAlpha: 1, duration: 0.68, stagger: 0.08 }, 0.7)
+        .to(".hero-detail-wrap", { autoAlpha: 1, duration: 0.5 }, 0.86)
         .to(".hero-detail-reveal", { clipPath: "inset(0% 0 0 0)", duration: 0.82 }, 0.9)
         .to(".hero-detail-image.is-active", { scale: 1, duration: 1.08 }, 0.9)
         .to(".detail-index, .project-meta", { y: 0, autoAlpha: 1, duration: 0.58, stagger: 0.07 }, 1.06)
@@ -564,9 +624,10 @@
         scrollTrigger: { trigger: hero, start: "top top-=75", end: "top top-=220", scrub: true },
       });
 
-      gsap.set(".philosophy-label", { x: -18, autoAlpha: 0 });
+      gsap.set(".section-kicker-line", { scaleY: 0 });
+      gsap.set(".section-kicker-text", { x: -10, autoAlpha: 0 });
       gsap.set(".philosophy-title .line-inner", { yPercent: 110, rotate: 0.8 });
-      gsap.set(".philosophy-body p, .philosophy-note", { y: 20, autoAlpha: 0 });
+      gsap.set(".philosophy-body p", { y: 20, autoAlpha: 0 });
       gsap.set(".body-rule", { scaleY: 0 });
       gsap.set(".text-link", { y: 11, autoAlpha: 0 });
       gsap.set(".philosophy-image-reveal", { clipPath: "inset(0 100% 0 0)" });
@@ -577,15 +638,15 @@
         defaults: { ease: "power4.out" },
         scrollTrigger: { trigger: philosophy, start: "top 82%", once: true },
       })
-        .to(".philosophy-label", { x: 0, autoAlpha: 1, duration: 0.58 })
+        .to(".section-kicker-line", { scaleY: 1, duration: 0.62 })
+        .to(".section-kicker-text", { x: 0, autoAlpha: 1, duration: 0.52 }, 0.08)
         .to(".philosophy-title .line-inner", { yPercent: 0, rotate: 0, duration: 0.82, stagger: 0.07 }, 0.05)
         .to(".body-rule", { scaleY: 1, duration: 0.62 }, 0.24)
         .to(".philosophy-body p", { y: 0, autoAlpha: 1, duration: 0.68 }, 0.3)
         .to(".text-link", { y: 0, autoAlpha: 1, duration: 0.55 }, 0.46)
         .to(".philosophy-image-reveal", { clipPath: "inset(0 0% 0 0)", duration: 0.94 }, 0.2)
         .to(".philosophy-image-reveal img", { scale: 1, xPercent: 0, duration: 1.15 }, 0.2)
-        .to(".philosophy-visual figcaption", { y: 0, autoAlpha: 1, duration: 0.48 }, 0.7)
-        .to(".philosophy-note", { y: 0, autoAlpha: 1, duration: 0.58 }, 0.58);
+        .to(".philosophy-visual figcaption", { y: 0, autoAlpha: 1, duration: 0.48 }, 0.7);
 
       const refresh = () => ScrollTrigger.refresh();
       document.fonts?.ready?.then(refresh);
@@ -659,20 +720,25 @@
     render();
   }
 
-  function preloadImages() {
-    const warmSlider = () => {
-      projects.slice(1).flatMap((project) => [project.main, project.detail]).forEach((src) => {
-        const image = new Image();
-        image.decoding = "async";
-        image.src = src;
-      });
-    };
-
-    if ("requestIdleCallback" in window) {
-      window.requestIdleCallback(warmSlider, { timeout: 2500 });
+  function scheduleAdjacentPreload() {
+    const warm = () => preloadAdjacentSlides(activeProjectIndex);
+    if (document.querySelector(".hero-main-image.is-active")?.complete) {
+      if ("requestIdleCallback" in window) window.requestIdleCallback(warm, { timeout: 2500 });
+      else window.setTimeout(warm, 1400);
     } else {
-      window.setTimeout(warmSlider, 1400);
+      window.addEventListener("load", warm, { once: true });
     }
+  }
+
+  function preloadAdjacentSlides(index) {
+    const adjacent = [wrap(index - 1, projects.length), wrap(index + 1, projects.length)];
+    adjacent.flatMap((projectIndex) => [projects[projectIndex].main, projects[projectIndex].detail]).forEach((src) => {
+      if (warmedImages.has(src)) return;
+      warmedImages.add(src);
+      const image = new Image();
+      image.decoding = "async";
+      image.src = src;
+    });
   }
 
   function loadImage(image, src) {
